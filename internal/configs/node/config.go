@@ -25,25 +25,18 @@ type Role byte
 const (
 	Unknown Role = iota
 	Validator
-	ClientNode
-	WalletNode
 	ExplorerNode
 )
 
 func (role Role) String() string {
 	switch role {
-	case Unknown:
-		return "Unknown"
 	case Validator:
 		return "Validator"
-	case ClientNode:
-		return "ClientNode"
-	case WalletNode:
-		return "WalletNode"
 	case ExplorerNode:
 		return "ExplorerNode"
+	default:
+		return "Unknown"
 	}
-	return "Unknown"
 }
 
 // NetworkType describes the type of Harmony network
@@ -294,7 +287,7 @@ func SetShardingSchedule(schedule shardingconfig.Schedule) {
 // ShardIDFromConsensusKey returns the shard ID statically determined from the
 // consensus key.
 func (conf *ConfigType) ShardIDFromConsensusKey() (uint32, error) {
-	var pubKey shard.BlsPublicKey
+	var pubKey shard.BLSPublicKey
 	// all keys belong to same shard
 	if err := pubKey.FromLibBLSPublicKey(conf.ConsensusPubKey.PublicKey[0]); err != nil {
 		return 0, errors.Wrapf(err,
@@ -309,7 +302,7 @@ func (conf *ConfigType) ShardIDFromConsensusKey() (uint32, error) {
 
 // ValidateConsensusKeysForSameShard checks if all consensus public keys belong to the same shard
 func (conf *ConfigType) ValidateConsensusKeysForSameShard(pubkeys []*bls.PublicKey, sID uint32) error {
-	var pubKey shard.BlsPublicKey
+	var pubKey shard.BLSPublicKey
 	for _, key := range pubkeys {
 		if err := pubKey.FromLibBLSPublicKey(key); err != nil {
 			return errors.Wrapf(err,

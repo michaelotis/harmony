@@ -26,9 +26,6 @@ import (
 func ballotResultBeaconchain(
 	bc engine.ChainReader, header *block.Header,
 ) (shard.SlotList, shard.SlotList, shard.SlotList, error) {
-	// TODO ek – retrieving by parent number (blockNum - 1) doesn't work,
-	//  while it is okay with hash.  Sounds like DB inconsistency.
-	//  Figure out why.
 	parentHeader := bc.GetHeaderByHash(header.ParentHash())
 	if parentHeader == nil {
 		return nil, nil, nil, ctxerror.New(
@@ -98,33 +95,37 @@ func AccumulateRewards(
 	}
 
 	// After staking
-	if bc.Config().IsStaking(header.Epoch()) &&
+	if headerE := header.Epoch(); bc.Config().IsStaking(headerE) &&
 		bc.CurrentHeader().ShardID() == shard.BeaconChainShardID {
 		utils.AnalysisStart("accumulateRewardBeaconchainSelfPayout", nowEpoch, blockNow)
 		defaultReward := network.BaseStakedReward
-		beaconCurrentEpoch := beaconChain.CurrentHeader().Epoch()
-		// TODO Use cached result in off-chain db instead of full computation
-		_, percentageStaked, err := network.WhatPercentStakedNow(
-			beaconChain, header.Time().Int64(),
-		)
-		if err != nil {
-			return network.EmptyPayout, err
-		}
-		howMuchOff, adjustBy := network.Adjustment(*percentageStaked)
-		defaultReward = defaultReward.Add(adjustBy)
-		utils.Logger().Info().
-			Str("percentage-token-staked", percentageStaked.String()).
-			Str("how-much-off", howMuchOff.String()).
-			Str("adjusting-by", adjustBy.String()).
-			Str("block-reward", defaultReward.String()).
-			Msg("dynamic adjustment of block-reward ")
+
+		// Following is commented because the new econ-model has a flat-rate block reward
+		// of 28 ONE per block assuming 4 shards and 8s block time:
+		//// TODO Use cached result in off-chain db instead of full computation
+		//_, percentageStaked, err := network.WhatPercentStakedNow(
+		//	beaconChain, header.Time().Int64(),
+		//)
+		//if err != nil {
+		//	return network.EmptyPayout, err
+		//}
+		//howMuchOff, adjustBy := network.Adjustment(*percentageStaked)
+		//defaultReward = defaultReward.Add(adjustBy)
+		//utils.Logger().Info().
+		//	Str("percentage-token-staked", percentageStaked.String()).
+		//	Str("how-much-off", howMuchOff.String()).
+		//	Str("adjusting-by", adjustBy.String()).
+		//	Str("block-reward", defaultReward.String()).
+		//	Msg("dynamic adjustment of block-reward ")
+
 		// If too much is staked, then possible to have negative reward,
 		// not an error, just a possible economic situation, hence we return
 		if defaultReward.IsNegative() {
 			return network.EmptyPayout, nil
 		}
 
-		newRewards := big.NewInt(0)
+		newRewards, beaconP, shardP :=
+			big.NewInt(0), []reward.Payout{}, []reward.Payout{}
 
 		// Take care of my own beacon chain committee, _ is missing, for slashing
 		members, payable, missing, err := ballotResultBeaconchain(beaconChain, header)
@@ -142,18 +143,22 @@ func AccumulateRewards(
 		); err != nil {
 			return network.EmptyPayout, err
 		}
+		beaconCurrentEpoch := beaconChain.CurrentHeader().Epoch()
 		votingPower, err := lookupVotingPower(
-			header.Epoch(), beaconCurrentEpoch, &subComm,
+			headerE, beaconCurrentEpoch, &subComm,
 		)
 		if err != nil {
 			return network.EmptyPayout, err
 		}
 
-		beaconExternalShare := shard.Schedule.InstanceForEpoch(header.Epoch()).ExternalVotePercent()
+		beaconExternalShare := shard.Schedule.InstanceForEpoch(
+			headerE,
+		).ExternalVotePercent()
 		for beaconMember := range payable {
 			// TODO Give out whatever leftover to the last voter/handle
 			// what to do about share of those that didn't sign
-			voter := votingPower.Voters[payable[beaconMember].BlsPublicKey]
+			blsKey := payable[beaconMember].BLSPublicKey
+			voter := votingPower.Voters[blsKey]
 			if !voter.IsHarmonyNode {
 				snapshot, err := bc.ReadValidatorSnapshot(voter.EarningAccount)
 				if err != nil {
@@ -166,6 +171,12 @@ func AccumulateRewards(
 				if err := state.AddReward(snapshot, due); err != nil {
 					return network.EmptyPayout, err
 				}
+				beaconP = append(beaconP, reward.Payout{
+					ShardID:     shard.BeaconChainShardID,
+					Addr:        voter.EarningAccount,
+					NewlyEarned: due,
+					EarningKey:  voter.Identity,
+				})
 			}
 		}
 		utils.AnalysisEnd("accumulateRewardBeaconchainSelfPayout", nowEpoch, blockNow)
@@ -180,9 +191,10 @@ func AccumulateRewards(
 
 			type slotPayable struct {
 				shard.Slot
-				payout *big.Int
-				bucket int
-				index  int
+				payout  *big.Int
+				bucket  int
+				index   int
+				shardID uint32
 			}
 
 			type slotMissing struct {
@@ -233,18 +245,21 @@ func AccumulateRewards(
 					return network.EmptyPayout, err
 				}
 
-				shardExternalShare := shard.Schedule.InstanceForEpoch(cxLink.Epoch()).ExternalVotePercent()
+				shardExternalShare := shard.Schedule.InstanceForEpoch(
+					epoch,
+				).ExternalVotePercent()
 				for j := range payableSigners {
-					voter := votingPower.Voters[payableSigners[j].BlsPublicKey]
+					voter := votingPower.Voters[payableSigners[j].BLSPublicKey]
 					if !voter.IsHarmonyNode && !voter.OverallPercent.IsZero() {
 						due := defaultReward.Mul(
 							voter.OverallPercent.Quo(shardExternalShare),
 						)
 						allPayables = append(allPayables, slotPayable{
-							Slot:   payableSigners[j],
-							payout: due.TruncateInt(),
-							bucket: i,
-							index:  j,
+							Slot:    payableSigners[j],
+							payout:  due.TruncateInt(),
+							bucket:  i,
+							index:   j,
+							shardID: shardID,
 						})
 					}
 				}
@@ -280,8 +295,9 @@ func AccumulateRewards(
 			// Finally do the pay
 			for bucket := range resultsHandle {
 				for payThem := range resultsHandle[bucket] {
+					payable := resultsHandle[bucket][payThem]
 					snapshot, err := bc.ReadValidatorSnapshot(
-						resultsHandle[bucket][payThem].EcdsaAddress,
+						payable.EcdsaAddress,
 					)
 					if err != nil {
 						return network.EmptyPayout, err
@@ -291,10 +307,18 @@ func AccumulateRewards(
 					if err := state.AddReward(snapshot, due); err != nil {
 						return network.EmptyPayout, err
 					}
+					shardP = append(shardP, reward.Payout{
+						ShardID:     payable.shardID,
+						Addr:        payable.EcdsaAddress,
+						NewlyEarned: due,
+						EarningKey:  payable.BLSPublicKey,
+					})
 				}
 			}
 			utils.AnalysisEnd("accumulateRewardShardchainPayout", nowEpoch, blockNow)
-			return network.NewStakingEraRewardForRound(newRewards, missing), nil
+			return network.NewStakingEraRewardForRound(
+				newRewards, missing, beaconP, shardP,
+			), nil
 		}
 		return network.EmptyPayout, nil
 	}

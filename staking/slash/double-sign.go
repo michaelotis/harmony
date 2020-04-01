@@ -9,7 +9,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/harmony-one/bls/ffi/go/bls"
-	"github.com/harmony-one/harmony/block"
 	"github.com/harmony-one/harmony/consensus/votepower"
 	"github.com/harmony-one/harmony/core/state"
 	"github.com/harmony-one/harmony/core/types"
@@ -68,7 +67,6 @@ type Moment struct {
 type Evidence struct {
 	Moment
 	ConflictingBallots
-	ProposalHeader *block.Header `json:"header"`
 }
 
 // ConflictingBallots ..
@@ -101,8 +99,7 @@ func (e Evidence) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Moment
 		ConflictingBallots
-		ProposalHeader *block.Header `json:"header"`
-	}{e.Moment, e.ConflictingBallots, e.ProposalHeader})
+	}{e.Moment, e.ConflictingBallots})
 }
 
 // Records ..
@@ -180,11 +177,13 @@ func Verify(
 		)
 	}
 
-	if first.ViewID != second.ViewID || first.Height != second.Height || first.BlockHeaderHash == second.BlockHeaderHash {
+	if first.ViewID != second.ViewID ||
+		first.Height != second.Height ||
+		first.BlockHeaderHash == second.BlockHeaderHash {
 		return errors.Wrapf(errSlashBlockNoConflict, "first %v+ second %v+", first, second)
 	}
 
-	if shard.CompareBlsPublicKey(first.SignerPubKey, second.SignerPubKey) != 0 {
+	if shard.CompareBLSPublicKey(first.SignerPubKey, second.SignerPubKey) != 0 {
 		k1, k2 := first.SignerPubKey.Hex(), second.SignerPubKey.Hex()
 		return errors.Wrapf(
 			errBallotSignerKeysNotSame, "%s %s", k1, k2,
@@ -218,6 +217,20 @@ func Verify(
 		second.SignerPubKey,
 	); err != nil || *addr != candidate.Offender {
 		return err
+	}
+
+	// last ditch check
+	if hash.FromRLPNew256(
+		candidate.Evidence.AlreadyCastBallot,
+	) == hash.FromRLPNew256(
+		candidate.Evidence.DoubleSignedBallot,
+	) {
+		return errors.Wrapf(
+			errBallotsNotDiff,
+			"%s %s",
+			candidate.Evidence.AlreadyCastBallot.SignerPubKey.Hex(),
+			candidate.Evidence.DoubleSignedBallot.SignerPubKey.Hex(),
+		)
 	}
 
 	for _, ballot := range [...]votepower.Ballot{
@@ -254,6 +267,7 @@ var (
 	errSlashDebtCannotBeNegative    = errors.New("slash debt cannot be negative")
 	errValidatorNotFoundDuringSlash = errors.New("validator not found")
 	errFailVerifySlash              = errors.New("could not verify bls key signature on slash")
+	errBallotsNotDiff               = errors.New("ballots submitted must be different")
 	zero                            = numeric.ZeroDec()
 	oneDoubleSignerRate             = numeric.MustNewDecFromStr("0.02")
 )
@@ -480,16 +494,24 @@ func Apply(
 }
 
 // Rate is the slashing % rate
-func Rate(doubleSignerCount, committeeSize int) numeric.Dec {
-	if doubleSignerCount == 0 || committeeSize == 0 {
-		return zero
+func Rate(votingPower *votepower.Roster, records Records) numeric.Dec {
+	rate := numeric.ZeroDec()
+
+	for i := range records {
+		key := records[i].Evidence.DoubleSignedBallot.SignerPubKey
+		if card, exists := votingPower.Voters[key]; exists {
+			rate = rate.Add(card.GroupPercent)
+		} else {
+			utils.Logger().Debug().
+				RawJSON("roster", []byte(votingPower.String())).
+				RawJSON("double-sign-record", []byte(records[i].String())).
+				Msg("did not have offenders voter card in roster as expected")
+		}
 	}
-	switch doubleSignerCount {
-	case 1:
-		return oneDoubleSignerRate
-	default:
-		return numeric.NewDec(
-			int64(doubleSignerCount),
-		).Quo(numeric.NewDec(int64(committeeSize)))
+
+	if rate.LT(oneDoubleSignerRate) {
+		rate = oneDoubleSignerRate
 	}
+
+	return rate
 }

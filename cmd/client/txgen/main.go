@@ -109,14 +109,14 @@ func setUpTXGen() *node.Node {
 	pubs := []*bls2.PublicKey{}
 	for _, acct := range genesis.HarmonyAccounts[startIdx:endIdx] {
 		pub := &bls2.PublicKey{}
-		if err := pub.DeserializeHexStr(acct.BlsPublicKey); err != nil {
+		if err := pub.DeserializeHexStr(acct.BLSPublicKey); err != nil {
 			fmt.Printf("Can not deserialize public key. err: %v", err)
 			os.Exit(1)
 		}
 		pubs = append(pubs, pub)
 	}
 	consensusObj.Decider.UpdateParticipants(pubs)
-	txGen.NodeConfig.SetRole(nodeconfig.ClientNode)
+	txGen.NodeConfig.SetRole(nodeconfig.Validator)
 	if shardID == 0 {
 		txGen.NodeConfig.SetShardGroupID(nodeconfig.GroupIDBeacon)
 	} else {

@@ -27,7 +27,7 @@ type TallyResult struct {
 }
 
 type voteBox struct {
-	voters       map[shard.BlsPublicKey]struct{}
+	voters       map[shard.BLSPublicKey]struct{}
 	currentTotal numeric.Dec
 }
 
@@ -81,7 +81,7 @@ func (v *stakedVoteWeight) IsQuorumAchievedByMask(mask *bls_cosi.Mask) bool {
 	return (*currentTotalPower).GT(threshold)
 }
 func (v *stakedVoteWeight) computeCurrentTotalPower(p Phase) (*numeric.Dec, error) {
-	w := shard.BlsPublicKey{}
+	w := shard.BLSPublicKey{}
 	members := v.Participants()
 	ballot := func() *voteBox {
 		switch p {
@@ -116,7 +116,7 @@ func (v *stakedVoteWeight) computeCurrentTotalPower(p Phase) (*numeric.Dec, erro
 // ComputeTotalPowerByMask computes the total power indicated by bitmap mask
 func (v *stakedVoteWeight) computeTotalPowerByMask(mask *bls_cosi.Mask) *numeric.Dec {
 	pubKeys := mask.Publics
-	w := shard.BlsPublicKey{}
+	w := shard.BLSPublicKey{}
 	currentTotal := numeric.ZeroDec()
 
 	for i := range pubKeys {
@@ -195,6 +195,7 @@ func (v *stakedVoteWeight) MarshalJSON() ([]byte, error) {
 	type t struct {
 		Policy            string `json:"policy"`
 		Count             int    `json:"count"`
+		Externals         int    `json:"external-validator-slot-count"`
 		Participants      []u    `json:"committee-members"`
 		HmyVotingPower    string `json:"hmy-voting-power"`
 		StakedVotingPower string `json:"staked-voting-power"`
@@ -202,7 +203,7 @@ func (v *stakedVoteWeight) MarshalJSON() ([]byte, error) {
 	}
 
 	parts := make([]u, voterCount)
-	i := 0
+	i, externalCount := 0, 0
 
 	for identity, voter := range v.roster.Voters {
 		member := u{
@@ -214,6 +215,7 @@ func (v *stakedVoteWeight) MarshalJSON() ([]byte, error) {
 			"",
 		}
 		if !voter.IsHarmonyNode {
+			externalCount++
 			member.EffectiveStake = voter.EffectiveStake.String()
 		}
 		parts[i] = member
@@ -223,6 +225,7 @@ func (v *stakedVoteWeight) MarshalJSON() ([]byte, error) {
 	return json.Marshal(t{
 		v.Policy().String(),
 		voterCount,
+		externalCount,
 		parts,
 		v.roster.OurVotingPowerTotalPercentage.String(),
 		v.roster.TheirVotingPowerTotalPercentage.String(),
@@ -237,7 +240,7 @@ func (v *stakedVoteWeight) AmIMemberOfCommitee() bool {
 	}
 	identity, _ := pubKeyFunc()
 	for _, key := range identity.PublicKey {
-		if w := (shard.BlsPublicKey{}); w.FromLibBLSPublicKey(key) != nil {
+		if w := (shard.BLSPublicKey{}); w.FromLibBLSPublicKey(key) != nil {
 			_, ok := v.roster.Voters[w]
 			if ok {
 				return true
@@ -248,7 +251,7 @@ func (v *stakedVoteWeight) AmIMemberOfCommitee() bool {
 }
 
 func newBox() *voteBox {
-	return &voteBox{map[shard.BlsPublicKey]struct{}{}, numeric.ZeroDec()}
+	return &voteBox{map[shard.BLSPublicKey]struct{}{}, numeric.ZeroDec()}
 }
 
 func newBallotBox() box {

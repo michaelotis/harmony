@@ -10,6 +10,7 @@ import (
 	common2 "github.com/harmony-one/harmony/internal/common"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/shard"
+	"github.com/harmony-one/harmony/staking/effective"
 	staking "github.com/harmony-one/harmony/staking/types"
 	"github.com/pkg/errors"
 )
@@ -52,7 +53,7 @@ func VerifyAndCreateValidatorFromMsg(
 	if !CanTransfer(stateDB, msg.ValidatorAddress, msg.Amount) {
 		return nil, errInsufficientBalanceForStake
 	}
-	v, err := staking.CreateValidatorFromNewMsg(msg, blockNum)
+	v, err := staking.CreateValidatorFromNewMsg(msg, blockNum, epoch)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +98,7 @@ func VerifyAndEditValidatorFromMsg(
 	if err != nil {
 		return nil, err
 	}
-	if err := staking.UpdateValidatorFromEditMsg(&wrapper.Validator, msg); err != nil {
+	if err := staking.UpdateValidatorFromEditMsg(&wrapper.Validator, msg, epoch); err != nil {
 		return nil, err
 	}
 	newRate := wrapper.Validator.Rate
@@ -264,7 +265,13 @@ func VerifyAndUndelegateFromMsg(
 			if err := wrapper.SanityCheck(
 				staking.DoNotEnforceMaxBLS,
 			); err != nil {
-				return nil, err
+				// allow self delegation to go below min self delegation
+				// but set the status to inactive
+				if errors.Cause(err) == staking.ErrInvalidSelfDelegation {
+					wrapper.Status = effective.Inactive
+				} else {
+					return nil, err
+				}
 			}
 			return wrapper, nil
 		}

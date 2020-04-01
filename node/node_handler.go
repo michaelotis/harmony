@@ -501,7 +501,8 @@ func (node *Node) PostConsensusProcessing(
 				computed := availability.ComputeCurrentSigning(
 					snapshot, wrapper,
 				)
-				computed.BlocksLeftInEpoch = shard.Schedule.BlocksPerEpoch() - computed.ToSign.Uint64()
+				beaconChainBlocks := uint64(node.Beaconchain().CurrentBlock().Header().Number().Int64()) % shard.Schedule.BlocksPerEpoch()
+				computed.BlocksLeftInEpoch = shard.Schedule.BlocksPerEpoch() - beaconChainBlocks
 
 				if err != nil && computed.IsBelowThreshold {
 					url := h.Availability.OnDroppedBelowThreshold
@@ -541,7 +542,7 @@ func (node *Node) pingMessageHandler(msgPayload []byte, sender libp2p_peer.ID) i
 
 	utils.Logger().Debug().
 		Str("Version", ping.NodeVer).
-		Str("BlsKey", peer.ConsensusPubKey.SerializeToHexStr()).
+		Str("BLSKey", peer.ConsensusPubKey.SerializeToHexStr()).
 		Str("IP", peer.IP).
 		Str("Port", peer.Port).
 		Interface("PeerID", peer.PeerID).

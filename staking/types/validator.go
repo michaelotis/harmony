@@ -12,6 +12,7 @@ import (
 	"github.com/harmony-one/harmony/crypto/hash"
 	common2 "github.com/harmony-one/harmony/internal/common"
 	"github.com/harmony-one/harmony/internal/ctxerror"
+	"github.com/harmony-one/harmony/internal/genesis"
 	"github.com/harmony-one/harmony/numeric"
 	"github.com/harmony-one/harmony/shard"
 	"github.com/harmony-one/harmony/staking/effective"
@@ -25,13 +26,14 @@ const (
 	MaxWebsiteLength         = 140
 	MaxSecurityContactLength = 140
 	MaxDetailsLength         = 280
-	BlsVerificationStr       = "harmony-one"
+	BLSVerificationStr       = "harmony-one"
 	TenThousand              = 10000
 )
 
 var (
-	errAddressNotMatch       = errors.New("Validator key not match")
-	errInvalidSelfDelegation = errors.New(
+	errAddressNotMatch = errors.New("validator key not match")
+	// ErrInvalidSelfDelegation ..
+	ErrInvalidSelfDelegation = errors.New(
 		"self delegation can not be less than min_self_delegation",
 	)
 	errInvalidTotalDelegation = errors.New(
@@ -95,7 +97,7 @@ type ValidatorWrapper struct {
 type Computed struct {
 	Signed            *big.Int    `json:"current-epoch-signed"`
 	ToSign            *big.Int    `json:"current-epoch-to-sign"`
-	BlocksLeftInEpoch uint64      `json:"current-epoch-blocks-left"`
+	BlocksLeftInEpoch uint64      `json:"num-beacon-blocks-until-next-epoch"`
 	Percentage        numeric.Dec `json:"current-epoch-signing-percentage"`
 	IsBelowThreshold  bool        `json:"-"`
 }
@@ -119,7 +121,7 @@ func NewEmptyStats() *ValidatorStats {
 	return &ValidatorStats{
 		numeric.ZeroDec(),
 		numeric.ZeroDec(),
-		[]votepower.VoteOnSubcomittee{},
+		[]VoteWithCurrentEpochEarning{},
 	}
 }
 
@@ -165,6 +167,12 @@ func (w ValidatorWrapper) MarshalJSON() ([]byte, error) {
 	})
 }
 
+// VoteWithCurrentEpochEarning ..
+type VoteWithCurrentEpochEarning struct {
+	votepower.VoteOnSubcomittee
+	Earned *big.Int `json:"earned-reward"`
+}
+
 // ValidatorStats to record validator's performance and history records
 type ValidatorStats struct {
 	// APR ..
@@ -172,7 +180,7 @@ type ValidatorStats struct {
 	// TotalEffectiveStake is the total effective stake this validator has
 	TotalEffectiveStake numeric.Dec `json:"total-effective-stake"`
 	// MetricsPerShard ..
-	MetricsPerShard []votepower.VoteOnSubcomittee `json:"by-shard"`
+	MetricsPerShard []VoteWithCurrentEpochEarning `json:"by-shard"`
 }
 
 func (s ValidatorStats) String() string {
@@ -185,7 +193,7 @@ type Validator struct {
 	// ECDSA address of the validator
 	Address common.Address `json:"address"`
 	// The BLS public key of the validator for consensus
-	SlotPubKeys []shard.BlsPublicKey `json:"bls-public-keys"`
+	SlotPubKeys []shard.BLSPublicKey `json:"bls-public-keys"`
 	// The number of the last epoch this validator is
 	// selected in committee (0 means never selected)
 	LastEpochInCommittee *big.Int `json:"last-epoch-in-committee"`
@@ -286,7 +294,7 @@ func (v *Validator) SanityCheck(oneThirdExtrn int) error {
 		)
 	}
 
-	allKeys := map[shard.BlsPublicKey]struct{}{}
+	allKeys := map[shard.BLSPublicKey]struct{}{}
 	for i := range v.SlotPubKeys {
 		if _, ok := allKeys[v.SlotPubKeys[i]]; !ok {
 			allKeys[v.SlotPubKeys[i]] = struct{}{}
@@ -324,15 +332,18 @@ func (w *ValidatorWrapper) SanityCheck(
 	switch len(w.Delegations) {
 	case 0:
 		return errors.Wrapf(
-			errInvalidSelfDelegation, "no self delegation given at all",
+			ErrInvalidSelfDelegation, "no self delegation given at all",
 		)
 	default:
 		if w.Status != effective.Banned &&
 			w.Delegations[0].Amount.Cmp(w.Validator.MinSelfDelegation) < 0 {
-			return errors.Wrapf(
-				errInvalidSelfDelegation,
-				"have %s want %s", w.Delegations[0].Amount.String(), w.Validator.MinSelfDelegation,
-			)
+			if w.Status == effective.Active {
+				return errors.Wrapf(
+					ErrInvalidSelfDelegation,
+					"min_self_delegation %s, amount %s",
+					w.Validator.MinSelfDelegation, w.Delegations[0].Amount.String(),
+				)
+			}
 		}
 	}
 	totalDelegation := w.TotalDelegation()
@@ -430,7 +441,7 @@ func (d Description) EnsureLength() (Description, error) {
 
 // VerifyBLSKeys checks if the public BLS key at index i of pubKeys matches the
 // BLS key signature at index i of pubKeysSigs.
-func VerifyBLSKeys(pubKeys []shard.BlsPublicKey, pubKeySigs []shard.BLSSignature) error {
+func VerifyBLSKeys(pubKeys []shard.BLSPublicKey, pubKeySigs []shard.BLSSignature) error {
 	if len(pubKeys) != len(pubKeySigs) {
 		return errBLSKeysNotMatchSigs
 	}
@@ -445,7 +456,7 @@ func VerifyBLSKeys(pubKeys []shard.BlsPublicKey, pubKeySigs []shard.BLSSignature
 }
 
 // VerifyBLSKey checks if the public BLS key matches the BLS signature
-func VerifyBLSKey(pubKey *shard.BlsPublicKey, pubKeySig *shard.BLSSignature) error {
+func VerifyBLSKey(pubKey *shard.BLSPublicKey, pubKeySig *shard.BLSSignature) error {
 	if len(pubKeySig) == 0 {
 		return errBLSKeysNotMatchSigs
 	}
@@ -460,7 +471,7 @@ func VerifyBLSKey(pubKey *shard.BlsPublicKey, pubKeySig *shard.BLSSignature) err
 		return err
 	}
 
-	messageBytes := []byte(BlsVerificationStr)
+	messageBytes := []byte(BLSVerificationStr)
 	msgHash := hash.Keccak256(messageBytes)
 	if !msgSig.VerifyHash(blsPubKey, msgHash[:]) {
 		return errBLSKeysNotMatchSigs
@@ -469,14 +480,68 @@ func VerifyBLSKey(pubKey *shard.BlsPublicKey, pubKeySig *shard.BLSSignature) err
 	return nil
 }
 
+func containsHarmonyBLSKeys(
+	blsKeys []shard.BLSPublicKey,
+	hmyAccounts []genesis.DeployAccount,
+	epoch *big.Int,
+) error {
+	for i := range blsKeys {
+		if err := matchesHarmonyBLSKey(
+			&blsKeys[i], hmyAccounts, epoch,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func matchesHarmonyBLSKey(
+	blsKey *shard.BLSPublicKey,
+	hmyAccounts []genesis.DeployAccount,
+	epoch *big.Int,
+) error {
+	type publicKeyAsHex = string
+	cache := map[string]map[publicKeyAsHex]struct{}{}
+	return func() error {
+		key := epoch.String()
+		if _, ok := cache[key]; !ok {
+			// one time cost per epoch
+			cache[key] = map[publicKeyAsHex]struct{}{}
+			for i := range hmyAccounts {
+				// invariant assume it is hex
+				cache[key][hmyAccounts[i].BLSPublicKey] = struct{}{}
+			}
+		}
+
+		hex := blsKey.Hex()
+		if _, exists := cache[key][hex]; exists {
+			return errors.Wrapf(
+				errDuplicateSlotKeys,
+				"slot key %s conflicts with internal keys",
+				hex,
+			)
+		}
+		return nil
+	}()
+}
+
 // CreateValidatorFromNewMsg creates validator from NewValidator message
-func CreateValidatorFromNewMsg(val *CreateValidator, blockNum *big.Int) (*Validator, error) {
+func CreateValidatorFromNewMsg(
+	val *CreateValidator, blockNum, epoch *big.Int,
+) (*Validator, error) {
 	desc, err := val.Description.EnsureLength()
 	if err != nil {
 		return nil, err
 	}
 	commission := Commission{val.CommissionRates, blockNum}
 	pubKeys := append(val.SlotPubKeys[0:0], val.SlotPubKeys...)
+
+	instance := shard.Schedule.InstanceForEpoch(epoch)
+	if err := containsHarmonyBLSKeys(
+		pubKeys, instance.HmyAccounts(), epoch,
+	); err != nil {
+		return nil, err
+	}
 
 	if err = VerifyBLSKeys(pubKeys, val.SlotKeySigs); err != nil {
 		return nil, err
@@ -497,7 +562,7 @@ func CreateValidatorFromNewMsg(val *CreateValidator, blockNum *big.Int) (*Valida
 }
 
 // UpdateValidatorFromEditMsg updates validator from EditValidator message
-func UpdateValidatorFromEditMsg(validator *Validator, edit *EditValidator) error {
+func UpdateValidatorFromEditMsg(validator *Validator, edit *EditValidator, epoch *big.Int) error {
 	if validator.Address != edit.ValidatorAddress {
 		return errAddressNotMatch
 	}
@@ -547,6 +612,12 @@ func UpdateValidatorFromEditMsg(validator *Validator, edit *EditValidator) error
 			}
 		}
 		if !found {
+			instance := shard.Schedule.InstanceForEpoch(epoch)
+			if err := matchesHarmonyBLSKey(
+				edit.SlotKeyToAdd, instance.HmyAccounts(), epoch,
+			); err != nil {
+				return err
+			}
 			if err := VerifyBLSKey(edit.SlotKeyToAdd, edit.SlotKeyToAddSig); err != nil {
 				return err
 			}

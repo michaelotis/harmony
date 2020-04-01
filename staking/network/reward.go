@@ -16,9 +16,9 @@ import (
 var (
 	// BlockReward is the block reward, to be split evenly among block signers.
 	BlockReward = new(big.Int).Mul(big.NewInt(24), big.NewInt(denominations.One))
-	// BaseStakedReward is the base block reward for epos.
+	// BaseStakedReward is the flat-rate block reward for epos staking launch.
 	BaseStakedReward = numeric.NewDecFromBigInt(new(big.Int).Mul(
-		big.NewInt(18), big.NewInt(denominations.One),
+		big.NewInt(28), big.NewInt(denominations.One),
 	))
 	// BlockRewardStakedCase is the baseline block reward in staked case -
 	totalTokens = numeric.NewDecFromBigInt(
@@ -79,18 +79,19 @@ type stakingEra struct {
 func NewStakingEraRewardForRound(
 	totalPayout *big.Int,
 	mia shard.SlotList,
+	beaconP, shardP []reward.Payout,
 ) reward.Reader {
-
 	return &stakingEra{
 		CompletedRound: reward.CompletedRound{
 			Total:            totalPayout,
-			BeaconchainAward: []reward.Payout{},
-			ShardChainAward:  []reward.Payout{},
+			BeaconchainAward: beaconP,
+			ShardChainAward:  shardP,
 		},
 		missingSigners: mia,
 	}
 }
 
+// MissingSigners ..
 func (r *stakingEra) MissingSigners() shard.SlotList {
 	return r.missingSigners
 }

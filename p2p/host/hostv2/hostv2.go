@@ -213,7 +213,6 @@ func (host *HostV2) Peerstore() libp2p_peerstore.Peerstore {
 // New creates a host for p2p communication
 func New(self *p2p.Peer, priKey libp2p_crypto.PrivKey) (*HostV2, error) {
 	// TODO: Convert to zerolog or internal logger interface
-	logger := utils.Logger()
 	listenAddr, err := ma.NewMultiaddr(fmt.Sprintf("/ip4/0.0.0.0/tcp/%s", self.Port))
 	if err != nil {
 		return nil, errors.Wrapf(err,
@@ -228,10 +227,7 @@ func New(self *p2p.Peer, priKey libp2p_crypto.PrivKey) (*HostV2, error) {
 		return nil, errors.Wrapf(err, "cannot initialize libp2p host")
 	}
 	traceFile := os.Getenv("P2P_TRACEFILE")
-	var options = make([]libp2p_pubsub.Option, 0, 0)
-	// increase the peer outbound queue size from default 32 to 64
-	options = append(options, libp2p_pubsub.WithPeerOutboundQueueSize(64))
-
+	options := []libp2p_pubsub.Option{libp2p_pubsub.WithPeerOutboundQueueSize(64)}
 	if len(traceFile) > 0 {
 		tracer, _ := libp2p_pubsub.NewJSONTracer(traceFile)
 		options = append(options, libp2p_pubsub.WithEventTracer(tracer))
@@ -243,7 +239,7 @@ func New(self *p2p.Peer, priKey libp2p_crypto.PrivKey) (*HostV2, error) {
 
 	self.PeerID = p2pHost.ID()
 
-	subLogger := logger.With().Str("hostID", p2pHost.ID().Pretty()).Logger()
+	subLogger := utils.Logger().With().Str("hostID", p2pHost.ID().Pretty()).Logger()
 	// has to save the private key for host
 	h := &HostV2{
 		h:      p2pHost,

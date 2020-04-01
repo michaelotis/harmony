@@ -59,16 +59,20 @@ type CompletedEPoSRound struct {
 // CandidateOrder ..
 type CandidateOrder struct {
 	*effective.SlotOrder
-	Validator common.Address
+	StakePerKey *big.Int
+	Validator   common.Address
 }
 
 // MarshalJSON ..
 func (p CandidateOrder) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		*effective.SlotOrder
-		Validator string `json:"validator"`
+		StakePerKey *big.Int `json:"stake-per-key"`
+		Validator   string   `json:"validator"`
 	}{
-		p.SlotOrder, common2.MustAddressToBech32(p.Validator),
+		p.SlotOrder,
+		p.StakePerKey,
+		common2.MustAddressToBech32(p.Validator),
 	})
 }
 
@@ -91,9 +95,21 @@ func NewEPoSRound(stakedReader StakingCandidatesReader) (
 
 	i := 0
 	for key := range eligibleCandidate {
+		// NOTE in principle, a div-by-zero should not
+		// happen by this point but the risk of not being explicit about
+		// checking is a panic, so the check is worth it
+		perKey := big.NewInt(0)
+		if l := len(eligibleCandidate[key].SpreadAmong); l > 0 {
+			perKey.Set(
+				new(big.Int).Div(
+					eligibleCandidate[key].Stake, big.NewInt(int64(l)),
+				),
+			)
+		}
 		auctionCandidates[i] = &CandidateOrder{
-			SlotOrder: eligibleCandidate[key],
-			Validator: key,
+			SlotOrder:   eligibleCandidate[key],
+			StakePerKey: perKey,
+			Validator:   key,
 		}
 		i++
 	}
@@ -110,7 +126,7 @@ func prepareOrders(
 	stakedReader StakingCandidatesReader,
 ) (map[common.Address]*effective.SlotOrder, error) {
 	candidates := stakedReader.ValidatorCandidates()
-	blsKeys := map[shard.BlsPublicKey]struct{}{}
+	blsKeys := map[shard.BLSPublicKey]struct{}{}
 	essentials := map[common.Address]*effective.SlotOrder{}
 	totalStaked, tempZero := big.NewInt(0), numeric.ZeroDec()
 
@@ -127,7 +143,7 @@ func prepareOrders(
 		if err != nil {
 			return nil, err
 		}
-		if !IsEligibleForEPoSAuction(snapshot, validator) {
+		if !IsEligibleForEPoSAuction(snapshot, validator, stakedReader.CurrentBlock().Epoch()) {
 			continue
 		}
 
@@ -169,8 +185,14 @@ func prepareOrders(
 }
 
 // IsEligibleForEPoSAuction ..
-func IsEligibleForEPoSAuction(snapshot, validator *staking.ValidatorWrapper) bool {
-	if snapshot.Counters.NumBlocksToSign.Cmp(validator.Counters.NumBlocksToSign) != 0 {
+func IsEligibleForEPoSAuction(snapshot, validator *staking.ValidatorWrapper, curEpoch *big.Int) bool {
+	// This original condition to check whether a validator is in last committee is not stable
+	// because cross-links may arrive after the epoch ends and it still got counted into the
+	// NumBlocksToSign, making this condition to be true when the validator is actually not in committee
+	//if snapshot.Counters.NumBlocksToSign.Cmp(validator.Counters.NumBlocksToSign) != 0 {
+
+	// Check whether the validator is in current committee
+	if validator.LastEpochInCommittee.Cmp(curEpoch) == 0 {
 		// validator was in last epoch's committee
 		// validator with below-threshold signing activity won't be considered for next epoch
 		// and their status will be turned to inactive in FinalizeNewBlock
@@ -232,8 +254,8 @@ func preStakingEnabledCommittee(s shardingconfig.Instance) *shard.State {
 		for j := 0; j < shardHarmonyNodes; j++ {
 			index := i + j*shardNum // The initial account to use for genesis nodes
 			pub := &bls.PublicKey{}
-			pub.DeserializeHexStr(hmyAccounts[index].BlsPublicKey)
-			pubKey := shard.BlsPublicKey{}
+			pub.DeserializeHexStr(hmyAccounts[index].BLSPublicKey)
+			pubKey := shard.BLSPublicKey{}
 			pubKey.FromLibBLSPublicKey(pub)
 			// TODO: directly read address for bls too
 			curNodeID := shard.Slot{
@@ -247,8 +269,8 @@ func preStakingEnabledCommittee(s shardingconfig.Instance) *shard.State {
 		for j := shardHarmonyNodes; j < shardSize; j++ {
 			index := i + (j-shardHarmonyNodes)*shardNum
 			pub := &bls.PublicKey{}
-			pub.DeserializeHexStr(fnAccounts[index].BlsPublicKey)
-			pubKey := shard.BlsPublicKey{}
+			pub.DeserializeHexStr(fnAccounts[index].BLSPublicKey)
+			pubKey := shard.BLSPublicKey{}
 			pubKey.FromLibBLSPublicKey(pub)
 			// TODO: directly read address for bls too
 			curNodeID := shard.Slot{
@@ -277,10 +299,10 @@ func eposStakedCommittee(
 		for j := 0; j < shardHarmonyNodes; j++ {
 			index := i + j*shardCount
 			pub := &bls.PublicKey{}
-			if err := pub.DeserializeHexStr(hAccounts[index].BlsPublicKey); err != nil {
+			if err := pub.DeserializeHexStr(hAccounts[index].BLSPublicKey); err != nil {
 				return nil, err
 			}
-			pubKey := shard.BlsPublicKey{}
+			pubKey := shard.BLSPublicKey{}
 			if err := pubKey.FromLibBLSPublicKey(pub); err != nil {
 				return nil, err
 			}
@@ -292,7 +314,7 @@ func eposStakedCommittee(
 		}
 	}
 
-	// TODO: make sure external validator BLS key are also not duplicate to Harmony's keys
+	// TODO(audit): make sure external validator BLS key are also not duplicate to Harmony's keys
 	completedEPoSRound, err := NewEPoSRound(stakerReader)
 
 	if err != nil {
